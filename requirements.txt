@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+pandas
+pyarrow>=24
+scikit-learn
+pydantic
+numpy
+joblib
