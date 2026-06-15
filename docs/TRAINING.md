@@ -1,34 +1,35 @@
-# Training: Vacancy в†’ CV Two-Stage Recommendation Model
+# Training: Vacancy -> CV Two-Stage Recommendation Model
 
-Р­С‚Р° РёРЅСЃС‚СЂСѓРєС†РёСЏ РѕРїРёСЃС‹РІР°РµС‚, РєР°Рє РІРѕСЃРїСЂРѕРёР·РІРµСЃС‚Рё РѕР±СѓС‡РµРЅРёРµ С„РёРЅР°Р»СЊРЅРѕР№ РґРІСѓС…СЃС‚Р°РґРёР№РЅРѕР№ РјРѕРґРµР»Рё.
+Эта инструкция описывает, как воспроизвести обучение финальной двухстадийной модели.
 
-РЎРёСЃС‚РµРјР° СЂРµС€Р°РµС‚ Р·Р°РґР°С‡Сѓ:
+Система решает задачу:
 
 ```text
-РЅР° РІС…РѕРґ: РІР°РєР°РЅСЃРёСЏ
-РЅР° РІС‹С…РѕРґ: top-K РїРѕРґС…РѕРґСЏС‰РёС… СЂРµР·СЋРјРµ
+на вход: вакансия
+на выход: top-K подходящих резюме
 ```
 
-Pipeline СЃРѕСЃС‚РѕРёС‚ РёР· РґРІСѓС… СЃС‚Р°РґРёР№:
+Pipeline состоит из двух стадий:
 
 ```text
 1. Retrieval / candidate generation:
-   vacancy embedding -> top-500 CV РїРѕ cosine similarity
-
+   vacancy embedding -> top-500 CV по cosine similarity
 2. Ranking:
-   CatBoostRanker РїРµСЂРµСѓРїРѕСЂСЏРґРѕС‡РёРІР°РµС‚ top-500 РєР°РЅРґРёРґР°С‚РѕРІ
-   Рё С„РѕСЂРјРёСЂСѓРµС‚ С„РёРЅР°Р»СЊРЅС‹Р№ top-10
+   CatBoostRanker переупорядочивает top-500 кандидатов
+   и формирует финальный top-10
 ```
 
-## 0. РџРѕРґРіРѕС‚РѕРІРєР° РґР°РЅРЅС‹С…
+## 0. Подготовка данных
 
-РЎС‹СЂС‹Рµ РґР°РЅРЅС‹Рµ РЅРµ РІС…РѕРґСЏС‚ РІ СЂРµРїРѕР·РёС‚РѕСЂРёР№. РћРЅРё РґРѕР»Р¶РЅС‹ Р»РµР¶Р°С‚СЊ РІ:
+Сырые данные не входят в репозиторий.
+
+Они должны лежать в:
 
 ```text
 data/aaa-out/
 ```
 
-РћР¶РёРґР°РµРјС‹Рµ С„Р°Р№Р»С‹:
+Ожидаемые файлы:
 
 ```text
 cv.parquet
@@ -38,19 +39,19 @@ vacancies_embeddings.parquet
 applies.parquet
 ```
 
-РџРµСЂРµРґ РѕР±СѓС‡РµРЅРёРµРј РЅСѓР¶РЅРѕ РІС‹РїРѕР»РЅРёС‚СЊ РЅРѕСЂРјР°Р»РёР·Р°С†РёСЋ:
+Перед обучением нужно выполнить нормализацию:
 
 ```bash
 python scripts/normalize_data.py --input-dir data/aaa-out --output-root data/processed --version v1
 ```
 
-РџРѕСЃР»Рµ СЌС‚РѕРіРѕ РґРѕР»Р¶РЅР° РїРѕСЏРІРёС‚СЊСЃСЏ РїР°РїРєР°:
+После этого должна появиться папка:
 
 ```text
 data/processed/v1/
 ```
 
-Р’ РЅРµР№ РґРѕР»Р¶РЅС‹ Р±С‹С‚СЊ РЅРѕСЂРјР°Р»РёР·РѕРІР°РЅРЅС‹Рµ С‚Р°Р±Р»РёС†С‹:
+В ней должны быть нормализованные таблицы:
 
 ```text
 cv_normalized.parquet
@@ -59,19 +60,21 @@ manifest.json
 normalization_report.json
 ```
 
-Р’Р°Р¶РЅРѕ: РёСЃС…РѕРґРЅС‹Рµ embeddings РІСЃС‘ РµС‰С‘ РґРѕР»Р¶РЅС‹ РѕСЃС‚Р°РІР°С‚СЊСЃСЏ РІ `data/aaa-out/`, РїРѕС‚РѕРјСѓ С‡С‚Рѕ РїРµСЂРІР°СЏ СЃС‚Р°РґРёСЏ retrieval РёСЃРїРѕР»СЊР·СѓРµС‚ `cv_embeddings.parquet` Рё `vacancies_embeddings.parquet`.
+Важно: исходные embeddings всё ещё должны оставаться в `data/aaa-out/`, потому что первая стадия retrieval использует `cv_embeddings.parquet` и `vacancies_embeddings.parquet`.
 
 ---
 
 ## 1. Stage 1: build retrieval candidate pool
 
-РџРµСЂРІР°СЏ СЃС‚Р°РґРёСЏ СЃС‚СЂРѕРёС‚ candidate pool. Р”Р»СЏ РєР°Р¶РґРѕР№ РІР°РєР°РЅСЃРёРё СЃС‡РёС‚Р°РµС‚СЃСЏ similarity РјРµР¶РґСѓ embedding РІР°РєР°РЅСЃРёРё Рё embeddings РІСЃРµС… CV.
+Первая стадия строит candidate pool.
 
-РўР°Рє РєР°Рє embeddings L2-РЅРѕСЂРјРёСЂРѕРІР°РЅС‹, РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ dot product, РєРѕС‚РѕСЂС‹Р№ СЌРєРІРёРІР°Р»РµРЅС‚РµРЅ cosine similarity.
+Для каждой вакансии считается similarity между embedding вакансии и embeddings всех CV.
 
-Р”Р»СЏ РєР°Р¶РґРѕР№ РІР°РєР°РЅСЃРёРё РІС‹Р±РёСЂР°РµС‚СЃСЏ top-500 CV.
+Так как embeddings L2-нормированы, используется dot product, который эквивалентен cosine similarity.
 
-РљРѕРјР°РЅРґР°:
+Для каждой вакансии выбирается top-500 CV.
+
+Команда:
 
 ```bash
 python scripts/build_ltr_dataset.py \
@@ -83,13 +86,13 @@ python scripts/build_ltr_dataset.py \
   --dataset-name ltr_v1_top500_neg5_ohe
 ```
 
-РџРѕСЃР»Рµ РІС‹РїРѕР»РЅРµРЅРёСЏ РїРѕСЏРІРёС‚СЃСЏ РїР°РїРєР°:
+После выполнения появится папка:
 
 ```text
 data/modeling/ltr_v1_top500_neg5_ohe/
 ```
 
-РћСЃРЅРѕРІРЅС‹Рµ С„Р°Р№Р»С‹ РІРЅСѓС‚СЂРё:
+Основные файлы внутри:
 
 ```text
 train_features.parquet
@@ -101,31 +104,31 @@ dataset_summary.json
 candidate_generation_metrics.csv
 ```
 
-Р§С‚Рѕ Р·РґРµСЃСЊ РїСЂРѕРёСЃС…РѕРґРёС‚:
+Что здесь происходит:
 
 ```text
 positive pairs = historical applies
-negative pairs = hard negatives РёР· embedding top-500
-negative ratio = 5 negatives РЅР° РєР°Р¶РґС‹Р№ positive
+negative pairs = hard negatives из embedding top-500
+negative ratio = 5 negatives на каждый positive
 ```
 
-Р­С‚Р° РєРѕРјР°РЅРґР° РѕРґРЅРѕРІСЂРµРјРµРЅРЅРѕ РґРµР»Р°РµС‚:
+Эта команда одновременно делает:
 
 ```text
 1. temporal train/validation split
 2. embedding retrieval top-500
-3. РїРѕСЃС‚СЂРѕРµРЅРёРµ pairwise features
-4. negative sampling РґР»СЏ train
-5. СЃРѕС…СЂР°РЅРµРЅРёРµ train/valid РґР°С‚Р°СЃРµС‚РѕРІ РґР»СЏ CatBoost
+3. построение pairwise features
+4. negative sampling для train
+5. сохранение train/valid датасетов для CatBoost
 ```
 
 ---
 
 ## 2. Stage 2: train CatBoostRanker
 
-Р¤РёРЅР°Р»СЊРЅР°СЏ РјРѕРґРµР»СЊ РѕР±СѓС‡Р°РµС‚СЃСЏ РїРѕРІРµСЂС… candidate pool РёР· Stage 1.
+Финальная модель обучается поверх candidate pool из Stage 1.
 
-Р›СѓС‡С€Р°СЏ РЅР°Р№РґРµРЅРЅР°СЏ РєРѕРЅС„РёРіСѓСЂР°С†РёСЏ:
+Лучшая найденная конфигурация:
 
 ```text
 model = CatBoostRanker
@@ -141,7 +144,7 @@ label_weighting = none
 selection metric = NDCG@10
 ```
 
-РљРѕРјР°РЅРґР° РѕР±СѓС‡РµРЅРёСЏ:
+Команда обучения:
 
 ```bash
 python scripts/train_catboost_ranker.py \
@@ -162,16 +165,16 @@ python scripts/train_catboost_ranker.py \
   --k-inf 10
 ```
 
-РџРѕСЃР»Рµ РѕР±СѓС‡РµРЅРёСЏ РїРѕСЏРІСЏС‚СЃСЏ:
+После обучения появятся:
 
 ```text
 data/models/catboost_final_yetirank_neg5/
 data/experiments/catboost_final_yetirank_neg5/
 ```
 
-Р’ `data/models/...` СЃРѕС…СЂР°РЅСЏРµС‚СЃСЏ `.cbm` РјРѕРґРµР»СЊ.
+В `data/models/...` сохраняется `.cbm` модель.
 
-Р’ `data/experiments/...` СЃРѕС…СЂР°РЅСЏСЋС‚СЃСЏ:
+В `data/experiments/...` сохраняются:
 
 ```text
 metrics.csv
@@ -184,6 +187,6 @@ recommendations_top10_*.csv
 
 ---
 
-## 3. РЎРѕС…СЂР°РЅРµРЅРёРµ С„РёРЅР°Р»СЊРЅРѕР№ РјРѕРґРµР»Рё СЃРѕ РІС‚РѕСЂРѕР№ СЃС‚Р°РґРёРё
+## 3. Сохранение финальной модели со второй стадии
 
-РџР°РїРєР° `models/` СЃРѕРґРµСЂР¶РёС‚ С‚РѕР»СЊРєРѕ РѕРґРЅСѓ С„РёРЅР°Р»СЊРЅСѓСЋ РјРѕРґРµР»СЊ РґР»СЏ РІРѕСЃРїСЂРѕРёР·РІРµРґРµРЅРёСЏ inference Р±РµР· РїРµСЂРµРѕР±СѓС‡РµРЅРёСЏ.
+Папка `models/` содержит только одну финальную модель для воспроизведения inference без переобучения.
