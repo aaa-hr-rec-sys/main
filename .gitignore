@@ -221,4 +221,5 @@ __marimo__/
 
 # Project local files
 /data/
+/artifacts/
 notebooks/*-Copy*.ipynb

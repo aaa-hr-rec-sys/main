@@ -2,7 +2,10 @@ fastapi
 uvicorn[standard]
 pandas
 pyarrow>=24
+catboost
 scikit-learn
-pydantic
+pydantic>=2
 numpy
 joblib
+pytest
+httpx
