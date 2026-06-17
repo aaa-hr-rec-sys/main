@@ -8,12 +8,9 @@ from __future__ import annotations
 
 import argparse
 import gc
-import json
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -24,6 +21,7 @@ SRC_DIR = MAIN_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from recommender.training.common import StepTimer, json_default, save_json, normalize_ks, resolve_candidate_top_k
 from recommender.features import add_pair_features, get_numeric_feature_columns
 from recommender.metrics import evaluate_ranked_candidates
 from recommender.negative_sampling import (
@@ -37,23 +35,6 @@ from recommender.retrieval import build_embedding_candidates_for_vacancies
 from utils.data import load_tables
 from utils.embeddings import embedding_norm_report, embedding_to_matrix
 from utils.splits import check_split_leakage, temporal_split
-
-
-class StepTimer:
-    """Print start/end logs and elapsed time for a pipeline step."""
-
-    def __init__(self, name: str):
-        self.name = name
-        self.start = 0.0
-
-    def __enter__(self):
-        self.start = time.perf_counter()
-        print(f"\n[START] {self.name}", flush=True)
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        elapsed = time.perf_counter() - self.start
-        print(f"[DONE]  {self.name}: {elapsed:.1f}s", flush=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -142,27 +123,6 @@ def resolve_processed_dir(processed_root: Path, requested_version: str) -> tuple
     return version, processed_dir
 
 
-def json_default(value: Any) -> Any:
-    if isinstance(value, (np.integer,)):
-        return int(value)
-    if isinstance(value, (np.floating,)):
-        return float(value)
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, pd.Timestamp):
-        return value.isoformat()
-    if pd.isna(value):
-        return None
-    return str(value)
-
-
-def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, default=json_default),
-        encoding="utf-8",
-    )
-
-
 def prepare_split_and_indices(
     applies: pd.DataFrame,
     cv_embeddings: pd.DataFrame,
@@ -225,10 +185,8 @@ def main() -> None:
         if args.hard_min_rank <= 0:
             raise ValueError("--hard-min-rank must be positive")
 
-    ks = sorted(set(int(k) for k in args.ks if int(k) > 0))
-    if not ks:
-        raise ValueError("--ks must contain positive integers")
-    top_k = max(args.top_k, max(ks))
+    ks = normalize_ks(args.ks)
+    top_k = resolve_candidate_top_k(args.top_k, ks)
 
     processed_version, processed_dir = resolve_processed_dir(
         args.processed_root,
@@ -448,14 +406,15 @@ def main() -> None:
         gc.collect()
 
     feature_columns = get_numeric_feature_columns()
-    write_json(
-        output_dir / "feature_columns.json",
+    save_json(
         {
             "numeric_feature_columns": feature_columns,
             "label_column": "label",
             "query_column": "vacancy_id_hash",
             "item_column": "cv_id_hash",
         },
+        output_dir / "feature_columns.json",
+        default=json_default,
     )
 
     summary = {
@@ -512,7 +471,7 @@ def main() -> None:
         "split_report": split_report.to_dict(orient="records"),
         "candidate_generation_metrics": candidate_generation_metrics.to_dict(orient="records"),
     }
-    write_json(output_dir / "dataset_summary.json", summary)
+    save_json(summary, output_dir / "dataset_summary.json", default=json_default)
 
     print("\nCandidate generation metrics:")
     print(candidate_generation_metrics.to_string(index=False))
