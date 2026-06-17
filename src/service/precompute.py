@@ -79,7 +79,7 @@ def build_inference_bundle(
     dataset_dir: Path = Path("data/modeling/ltr_v1_top500_neg5_ohe"),
     model_path: Path = Path("models") / FINAL_MODEL_NAME,
     retrieval_top_k: int = 500,
-    max_response_top_k: int = 50,
+    max_response_top_k: int = 500,
     overwrite: bool = False,
 ) -> dict[str, Any]:
     """Собрать и проверить директорию inference bundle"""

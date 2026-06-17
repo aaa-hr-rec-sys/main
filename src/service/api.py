@@ -1,7 +1,8 @@
-"""FastAPI-приложение синхронного inference-сервиса"""
+"""FastAPI-приложение inference-сервиса и MVP orchestrator"""
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -12,8 +13,20 @@ from fastapi.responses import JSONResponse
 
 from service.artifacts import ArtifactLoadError, InferenceArtifacts, load_inference_artifacts
 from service.config import ServiceSettings, load_settings
+from service.jobs import JobNotFoundError
+from service.orchestrator import InferenceOrchestrator
 from service.pipeline import RecommendationPipeline, UnknownVacancyError
-from service.schemas import HealthResponse, ReadyResponse, RecommendationRequest
+from service.schemas import (
+    FrontendRecommendRequest,
+    FrontendRecommendResponse,
+    HealthResponse,
+    InferenceJobCreateRequest,
+    InferenceJobCreateResponse,
+    InferenceJobResultResponse,
+    InferenceJobStatusResponse,
+    ReadyResponse,
+    RecommendationRequest,
+)
 
 
 def _error_response(
@@ -40,6 +53,23 @@ def _build_pipeline(artifacts: InferenceArtifacts | None) -> RecommendationPipel
     return RecommendationPipeline(artifacts) if artifacts is not None else None
 
 
+def _job_error_status(code: str) -> int:
+    if code in {"runtime_embedder_not_configured", "service_not_ready"}:
+        return status.HTTP_503_SERVICE_UNAVAILABLE
+    if code == "unknown_vacancy_id":
+        return status.HTTP_404_NOT_FOUND
+    if code == "bad_request":
+        return status.HTTP_400_BAD_REQUEST
+    return status.HTTP_500_INTERNAL_SERVER_ERROR
+
+
+def _get_orchestrator(app: FastAPI) -> InferenceOrchestrator:
+    orchestrator = getattr(app.state, "orchestrator", None)
+    if orchestrator is None:
+        raise RuntimeError("Orchestrator is not started")
+    return orchestrator
+
+
 def create_app(
     settings: ServiceSettings | None = None,
     artifacts: InferenceArtifacts | None = None,
@@ -56,7 +86,13 @@ def create_app(
                 app.state.load_error = None
             except ArtifactLoadError as exc:
                 app.state.load_error = str(exc)
+        app.state.orchestrator = InferenceOrchestrator(
+            pipeline=app.state.pipeline,
+            settings=app.state.settings,
+        )
+        await app.state.orchestrator.start()
         yield
+        await app.state.orchestrator.stop()
 
     app = FastAPI(
         title="Resume Recommendation Inference Service",
@@ -67,6 +103,7 @@ def create_app(
     app.state.artifacts = artifacts
     app.state.pipeline = _build_pipeline(artifacts)
     app.state.load_error = None
+    app.state.orchestrator = None
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
@@ -132,6 +169,111 @@ def create_app(
                 status.HTTP_500_INTERNAL_SERVER_ERROR,
                 "inference_error",
                 "Recommendation pipeline failed",
+                str(exc),
+            )
+
+    @app.post(
+        "/inference/jobs",
+        response_model=InferenceJobCreateResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def create_inference_job(request: InferenceJobCreateRequest):
+        try:
+            return await _get_orchestrator(app).submit(request)
+        except RuntimeError as exc:
+            return _error_response(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "orchestrator_not_available",
+                str(exc),
+            )
+
+    @app.get("/inference/jobs/{job_id}", response_model=InferenceJobStatusResponse)
+    def get_inference_job(job_id: str):
+        try:
+            return _get_orchestrator(app).status(job_id)
+        except JobNotFoundError:
+            return _error_response(
+                status.HTTP_404_NOT_FOUND,
+                "unknown_job_id",
+                f"Unknown job_id: {job_id}",
+            )
+        except RuntimeError as exc:
+            return _error_response(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "orchestrator_not_available",
+                str(exc),
+            )
+
+    @app.get("/inference/jobs/{job_id}/result", response_model=InferenceJobResultResponse)
+    def get_inference_job_result(job_id: str):
+        try:
+            orchestrator = _get_orchestrator(app)
+            job_status = orchestrator.status(job_id)
+            if job_status.status == "failed" and job_status.error is not None:
+                return _error_response(
+                    _job_error_status(job_status.error.code),
+                    job_status.error.code,
+                    job_status.error.message,
+                    job_status.error.details,
+                )
+            result = orchestrator.result(job_id)
+            if result is None:
+                return JSONResponse(
+                    status_code=status.HTTP_202_ACCEPTED,
+                    content=jsonable_encoder(job_status),
+                )
+            return result
+        except JobNotFoundError:
+            return _error_response(
+                status.HTTP_404_NOT_FOUND,
+                "unknown_job_id",
+                f"Unknown job_id: {job_id}",
+            )
+        except RuntimeError as exc:
+            return _error_response(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "orchestrator_not_available",
+                str(exc),
+            )
+
+    @app.post("/recommend", response_model=FrontendRecommendResponse)
+    async def frontend_recommend(request: FrontendRecommendRequest):
+        job_request = InferenceJobCreateRequest(
+            vacancy=request.to_vacancy_fields(),
+            candidate_limit=request.candidate_limit,
+            result_limit=request.result_limit,
+        )
+        try:
+            orchestrator = _get_orchestrator(app)
+            created = await orchestrator.submit(job_request)
+            deadline = asyncio.get_running_loop().time() + app.state.settings.recommend_timeout_seconds
+
+            while asyncio.get_running_loop().time() < deadline:
+                job_status = orchestrator.status(created.job_id)
+                if job_status.status == "succeeded":
+                    result = orchestrator.result(created.job_id)
+                    return FrontendRecommendResponse(
+                        recommendations=result.recommendations if result is not None else []
+                    )
+                if job_status.status == "failed" and job_status.error is not None:
+                    return _error_response(
+                        _job_error_status(job_status.error.code),
+                        job_status.error.code,
+                        job_status.error.message,
+                        job_status.error.details,
+                    )
+                await asyncio.sleep(0.02)
+
+            return _error_response(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "inference_job_not_ready",
+                "Inference job did not finish within frontend compatibility timeout",
+                {"job_id": created.job_id},
+            )
+        except RuntimeError as exc:
+            return _error_response(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "orchestrator_not_available",
                 str(exc),
             )
 

@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
         default=Path("artifacts/inference_bundle_v1"),
     )
     parser.add_argument("--retrieval-top-k", type=int, default=500)
-    parser.add_argument("--max-response-top-k", type=int, default=50)
+    parser.add_argument("--max-response-top-k", type=int, default=500)
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
