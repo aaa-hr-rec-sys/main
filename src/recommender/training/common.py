@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 
@@ -35,11 +37,37 @@ def ensure_dir(path: Path) -> Path:
     return path
 
 
-def save_json(data: dict[str, Any], path: Path) -> None:
+def json_default(value: Any) -> Any:
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        return float(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if pd.isna(value):
+        return None
+    return str(value)
+
+
+def save_json(
+    data: dict[str, Any],
+    path: Path,
+    default: Callable[[Any], Any] | None = None,
+) -> None:
     """Save JSON with stable formatting."""
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    dumps_kwargs: dict[str, Any] = {
+        "ensure_ascii": False,
+        "indent": 2,
+    }
+    if default is not None:
+        dumps_kwargs["default"] = default
+
     path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
+        json.dumps(data, **dumps_kwargs),
         encoding="utf-8",
     )
 
@@ -85,3 +113,29 @@ def select_ordered_subset_by_ids(
     result = result.sort_values("_order", kind="mergesort").drop(columns="_order")
 
     return result.reset_index(drop=True)
+
+
+def validate_k_inf(k_inf: int) -> None:
+    """Validate the number of recommendations."""
+    if k_inf <= 0:
+        raise ValueError("--k-inf must be positive")
+
+
+def normalize_ks(ks: list[int]) -> list[int]:
+    """Return sorted unique positive K values for ranking metrics."""
+    result = sorted(set(int(k) for k in ks if int(k) > 0))
+    if not result:
+        raise ValueError("--ks must contain positive integers")
+    return result
+
+
+def resolve_candidate_top_k(
+    top_k: int,
+    ks: list[int],
+    k_inf: int | None = None,
+) -> int:
+    """Choose candidate pool size large enough for metrics and saved recommendations."""
+    values = [top_k, max(ks)]
+    if k_inf is not None:
+        values.append(k_inf)
+    return max(values)

@@ -9,10 +9,10 @@ from recommender.training.no_ml import (
     build_word_overlap_candidates,
 )
 from recommender.training.common import ensure_dir, save_json
-from recommender.training.experiment_inputs import load_experiment_data
-from recommender.training.evaluation import (
+from recommender.training.no_ml import (
     RankingEvaluationInput,
     evaluate_rankings_and_save,
+    load_experiment_data,
 )
 
 
