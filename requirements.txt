@@ -6,3 +6,4 @@ scikit-learn
 pydantic
 numpy
 joblib
+catboost

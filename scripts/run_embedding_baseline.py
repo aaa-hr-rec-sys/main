@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -18,12 +16,19 @@ SRC_DIR = MAIN_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from recommender.inference import make_recommendation_output, save_recommendations
+from recommender.training.common import (
+    json_default,
+    normalize_ks,
+    resolve_candidate_top_k,
+    save_json,
+    validate_k_inf,
+)
+from recommender.training.experiment_outputs import save_recommendation_outputs
 from recommender.metrics import evaluate_ranked_candidates
 from recommender.retrieval import build_embedding_candidates_for_vacancies
+from recommender.training.ltr_dataset import prepare_validation
 from utils.data import load_tables
 from utils.embeddings import embedding_norm_report, embedding_to_matrix
-from utils.splits import check_split_leakage, temporal_split
 
 
 def parse_args() -> argparse.Namespace:
@@ -90,79 +95,12 @@ def load_processed_tables(processed_dir: Path) -> tuple[pd.DataFrame, pd.DataFra
     return pd.read_parquet(cv_path), pd.read_parquet(vacancies_path)
 
 
-def json_default(value: Any) -> Any:
-    if isinstance(value, (np.integer,)):
-        return int(value)
-    if isinstance(value, (np.floating,)):
-        return float(value)
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, pd.Timestamp):
-        return value.isoformat()
-    if pd.isna(value):
-        return None
-    return str(value)
-
-
-def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, default=json_default),
-        encoding="utf-8",
-    )
-
-
-def prepare_validation(
-    applies: pd.DataFrame,
-    cv_embeddings: pd.DataFrame,
-    vacancies_embeddings: pd.DataFrame,
-    valid_frac: float,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, np.ndarray]:
-    train_applies, valid_applies = temporal_split(
-        applies,
-        date_col="applied_at_jittered",
-        valid_frac=valid_frac,
-    )
-    split_report = check_split_leakage(train_applies, valid_applies)
-
-    cv_id_to_idx = pd.Series(
-        np.arange(len(cv_embeddings), dtype=np.int32),
-        index=cv_embeddings["cv_id_hash"],
-    )
-    vacancy_id_to_idx = pd.Series(
-        np.arange(len(vacancies_embeddings), dtype=np.int32),
-        index=vacancies_embeddings["vacancy_id_hash"],
-    )
-
-    valid_pairs = valid_applies[["cv_id_hash", "vacancy_id_hash"]].drop_duplicates().copy()
-    valid_pairs["cv_idx"] = valid_pairs["cv_id_hash"].map(cv_id_to_idx)
-    valid_pairs["vacancy_idx"] = valid_pairs["vacancy_id_hash"].map(vacancy_id_to_idx)
-
-    missing_mask = valid_pairs["cv_idx"].isna() | valid_pairs["vacancy_idx"].isna()
-    if missing_mask.any():
-        print(f"Warning: dropping {int(missing_mask.sum())} validation pairs without embeddings")
-
-    valid_pairs = valid_pairs.loc[~missing_mask].copy()
-    valid_pairs["cv_idx"] = valid_pairs["cv_idx"].astype(np.int32)
-    valid_pairs["vacancy_idx"] = valid_pairs["vacancy_idx"].astype(np.int32)
-
-    validation_vacancy_indices = np.array(
-        sorted(valid_pairs["vacancy_idx"].unique()),
-        dtype=np.int32,
-    )
-
-    return train_applies, valid_pairs, split_report, validation_vacancy_indices
-
-
 def main() -> None:
     args = parse_args()
 
-    if args.k_inf <= 0:
-        raise ValueError("--k-inf must be positive")
-
-    ks = sorted(set(int(k) for k in args.ks if int(k) > 0))
-    if not ks:
-        raise ValueError("--ks must contain positive integers")
-    top_k = max(args.top_k, max(ks), args.k_inf)
+    validate_k_inf(args.k_inf)
+    ks = normalize_ks(args.ks)
+    top_k = resolve_candidate_top_k(args.top_k, ks, args.k_inf)
 
     processed_version, processed_dir = resolve_processed_dir(
         args.processed_root,
@@ -230,7 +168,7 @@ def main() -> None:
         ranking_name="embedding_only",
     )
     metrics.to_csv(output_dir / "metrics.csv", index=False)
-    write_json(output_dir / "metrics.json", {"metrics": metrics.to_dict(orient="records")})
+    save_json({"metrics": metrics.to_dict(orient="records")}, output_dir / "metrics.json", default=json_default)
 
     candidate_path = None
     if args.save_candidates:
@@ -242,20 +180,17 @@ def main() -> None:
         print(f"Saving top-{args.k_inf} recommendations with CV/vacancy details...")
         cv_norm, vacancies_norm = load_processed_tables(processed_dir)
 
-        recommendations = make_recommendation_output(
+        recommendation_info = save_recommendation_outputs(
             candidates=candidates,
             cv_table=cv_norm,
             vacancies_table=vacancies_norm,
+            output_dir=output_dir,
+            filename_stem=f"recommendations_top{args.k_inf}_embedding",
             rank_col="embedding_rank",
             score_col="embedding_score",
             k_inf=args.k_inf,
-            keep_feature_columns=False,
-        )
-        recommendation_info = save_recommendations(
-            recommendations=recommendations,
-            output_dir=output_dir,
-            filename_stem=f"recommendations_top{args.k_inf}_embedding",
             csv_limit=args.recommendations_csv_limit,
+            keep_feature_columns=False,
         )
 
     summary = {
@@ -291,7 +226,7 @@ def main() -> None:
         "embedding_norm_report": embedding_report.to_dict(orient="records"),
         "metrics": metrics.to_dict(orient="records"),
     }
-    write_json(output_dir / "run_summary.json", summary)
+    save_json(summary, output_dir / "run_summary.json", default=json_default)
 
     print("\nMetrics:")
     print(metrics.to_string(index=False))
