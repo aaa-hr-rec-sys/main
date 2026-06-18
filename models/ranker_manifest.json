@@ -1,0 +1,24 @@
+{
+  "artifact_name": "ranker",
+  "artifact_version": "v1",
+  "model_file": "catboost_ranker_lossYetiRank_it500_depth6_lr0p05_l23p0_onehot10_wnone.cbm",
+  "feature_columns_file": "ranker_feature_columns.json",
+  "training_dataset": "data/modeling/ltr_v1_top500_neg5_ohe",
+  "processed_data_version": "v1",
+  "runtime_cv_store": "data/processed/v1/cv_normalized.parquet",
+  "model_type": "CatBoostRanker",
+  "loss_function": "YetiRank",
+  "retrieval_top_k": 500,
+  "selection_metric": "NDCG@10",
+  "git_policy": {
+    "commit": [
+      "models/catboost_ranker_lossYetiRank_it500_depth6_lr0p05_l23p0_onehot10_wnone.cbm",
+      "models/ranker_feature_columns.json",
+      "models/ranker_manifest.json"
+    ],
+    "do_not_commit": [
+      "data/",
+      "data/processed/v1/cv_normalized.parquet"
+    ]
+  }
+}

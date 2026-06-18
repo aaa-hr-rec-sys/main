@@ -1,0 +1,18 @@
+{
+  "numeric_feature_columns": [
+    "embedding_score",
+    "embedding_rank",
+    "same_profession_norm",
+    "same_group_profession_norm",
+    "same_business_category_norm",
+    "same_sfera_norm",
+    "experience_compatible_feature",
+    "schedule_compatible_feature",
+    "employment_type_compatible_feature",
+    "education_compatible_feature",
+    "salary_missing"
+  ],
+  "label_column": "label",
+  "query_column": "vacancy_id_hash",
+  "item_column": "cv_id_hash"
+}
