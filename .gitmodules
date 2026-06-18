@@ -1,6 +1,9 @@
 [submodule "frontend"]
 	path = frontend
 	url = ../frontend
+[submodule "retrieval-service"]
+	path = retrieval-service
+	url = ../retrieval-service
 [submodule "backend"]
 	path = backend
 	url = git@github.com:aaa-hr-rec-sys/backend.git
