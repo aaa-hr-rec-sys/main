@@ -187,6 +187,79 @@ recommendations_top10_*.csv
 
 ---
 
-## 3. Сохранение финальной модели со второй стадии
+## 3. Подготовка inference artifact для Ranking Service
 
-Папка `models/` содержит только одну финальную модель для воспроизведения inference без переобучения.
+Папка `models/` содержит файлы, необходимые для inference второй стадии без переобучения.
+
+В `models/` должны лежать:
+
+```text
+<final_catboost_model>.cbm
+ranker_feature_columns.json
+ranker_manifest.json
+```
+
+Файл `.cbm` — финальная модель CatBoostRanker.
+
+Файл `ranker_feature_columns.json` — список признаков, ожидаемых моделью на inference.
+
+Файл `ranker_manifest.json` — manifest, который связывает модель и feature columns. Ranking Service читает manifest и по нему определяет, какой `.cbm` файл использовать.
+
+Важно: `cv_normalized.parquet` не сохраняется в `models/` и не коммитится в Git. Он является data artifact и должен быть получен на шаге 0:
+
+```text
+data/processed/v1/cv_normalized.parquet
+```
+
+Для подготовки inference artifact используется команда:
+
+```bash
+python scripts/prepare_ranker_artifact.py \
+  --model-path <path_to_final_catboost_model>.cbm \
+  --dataset-dir data/modeling/<dataset_name> \
+  --output-dir models \
+  --artifact-version v1 \
+  --processed-data-version v1 \
+  --retrieval-top-k 500 \
+  --loss-function YetiRank \
+  --selection-metric NDCG@10
+```
+
+Здесь:
+
+```text
+<path_to_final_catboost_model>.cbm
+    путь к выбранной финальной `.cbm` модели после обучения
+
+data/modeling/<dataset_name>
+    путь к датасету, на котором была обучена выбранная модель
+```
+
+Для текущей финальной модели использовался датасет:
+
+```text
+data/modeling/ltr_v1_top500_neg5_ohe
+```
+
+После выполнения команды в `models/` должны быть:
+
+```text
+<final_catboost_model>.cbm
+ranker_feature_columns.json
+ranker_manifest.json
+```
+
+Проверить manifest можно командой:
+
+```bash
+python -c "import json; m=json.load(open('models/ranker_manifest.json', encoding='utf-8')); print(m['model_file']); print(m['feature_columns_file']); print(m['training_dataset']); print(m['runtime_cv_store'])"
+```
+
+Ожидаемый смысл вывода:
+
+```text
+<final_catboost_model>.cbm
+ranker_feature_columns.json
+data/modeling/<dataset_name>
+data/processed/v1/cv_normalized.parquet
+```

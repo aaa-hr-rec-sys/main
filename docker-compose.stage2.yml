@@ -1,0 +1,18 @@
+﻿services:
+  ranking-service:
+    build:
+      context: ./ranking-service
+    ports:
+      - "8002:8000"
+    environment:
+      RANKING_RANKER_MANIFEST_PATH: /app/artifacts/models/ranker_manifest.json
+      RANKING_CV_STORE_PATH: /app/artifacts/cv/cv_normalized.parquet
+    volumes:
+      - ./models:/app/artifacts/models:ro
+      - ./data/processed/v1:/app/artifacts/cv:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
