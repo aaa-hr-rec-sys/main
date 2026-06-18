@@ -1,0 +1,77 @@
+services:
+  frontend:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+      - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      STAGE1_URL: http://retrieval-service:8000/retrieve
+      STAGE2_URL: http://ranking-service:8000/rank
+      RECOMMEND_TIMEOUT_SECONDS: 600
+      STAGE1_TIMEOUT_SECONDS: 600
+      STAGE2_TIMEOUT_SECONDS: 300
+      ORCH_WORKER_COUNT: 1
+    ports:
+      - "8000:8000"
+    depends_on:
+      retrieval-service:
+        condition: service_healthy
+      ranking-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  retrieval-service:
+    build:
+      context: ./retrieval-service
+      dockerfile: src/retrieval_service/Dockerfile
+    environment:
+      CV_EMBEDDINGS_PATH: /app/data/cv_embeddings.parquet
+      HF_HOME: /app/cache/huggingface
+      RETRIEVAL_MODEL_NAME: Qwen/Qwen3-Embedding-0.6B
+      RETRIEVAL_MAX_TOP_K: 500
+    ports:
+      - "8001:8000"
+    volumes:
+      - ../aaa-out:/app/data:ro
+      - retrieval-hf-cache:/app/cache/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+
+  ranking-service:
+    build:
+      context: ./ranking-service
+    environment:
+      RANKING_RANKER_MANIFEST_PATH: /app/artifacts/models/ranker_manifest.json
+      RANKING_CV_STORE_PATH: /app/artifacts/cv/cv_normalized.parquet
+    ports:
+      - "8002:8000"
+    volumes:
+      - ./models:/app/artifacts/models:ro
+      - ./data/processed/v1:/app/artifacts/cv:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  retrieval-hf-cache:
